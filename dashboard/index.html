@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard financiero</title>
+<style>
+:root { --azul:#0b2545; --teal:#0f7c80; --rojo:#c62828; --fondo:#f4f6f8; --texto:#1d2733; --gris:#5b6775; }
+* { box-sizing: border-box; }
+body { margin:0; font-family: system-ui, "Segoe UI", Roboto, sans-serif; background:var(--fondo); color:var(--texto); }
+header { background:var(--azul); color:#fff; padding:14px 24px; display:flex; justify-content:space-between; align-items:center; }
+main { padding:24px; max-width:1100px; margin:auto; }
+.hidden { display:none !important; }
+.card { background:#fff; border-radius:10px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:16px 0; }
+.kpi .label { font-size:13px; color:var(--gris); }
+.kpi .valor { font-size:22px; font-weight:700; margin-top:4px; }
+.neg { color:var(--rojo); }
+.controles { display:flex; gap:12px; align-items:end; flex-wrap:wrap; }
+.controles label { font-size:13px; display:flex; flex-direction:column; gap:4px; }
+input, button { padding:8px 10px; font-size:15px; border-radius:6px; border:1px solid #c9d1da; }
+button { background:var(--teal); color:#fff; border:none; cursor:pointer; }
+button.sec { background:transparent; border:1px solid #fff; }
+.alerta { padding:10px 14px; border-radius:6px; margin:12px 0; background:#fdecea; color:var(--rojo); }
+.badge { padding:2px 8px; border-radius:10px; font-size:12px; background:#e7f5f5; }
+.badge.rojo { background:#fdecea; color:var(--rojo); }
+table { width:100%; border-collapse:collapse; margin-top:12px; }
+th, td { padding:8px; text-align:right; border-bottom:1px solid #e5e9ee; }
+th:first-child, td:first-child { text-align:left; }
+.login { max-width:360px; margin:60px auto; }
+.login form { display:flex; flex-direction:column; gap:12px; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Dashboard financiero</strong>
+  <button id="btnSalir" class="sec hidden">Cerrar sesión</button>
+</header>
+
+<section id="vistaLogin" class="login">
+  <form class="card" id="formLogin">
+    <h2 style="margin:0">Iniciar sesión</h2>
+    <label>Correo <input type="email" id="email" required></label>
+    <label>Contraseña <input type="password" id="password" required></label>
+    <button type="submit">Entrar</button>
+    <div id="errLogin" class="alerta hidden"></div>
+  </form>
+</section>
+
+<main id="vistaDash" class="hidden">
+  <div class="card controles">
+    <label>Desde <input type="date" id="desde"></label>
+    <label>Hasta <input type="date" id="hasta"></label>
+    <button id="btnActualizar">Actualizar</button>
+    <span id="periodo" style="margin-left:auto; color:var(--gris)"></span>
+  </div>
+  <div id="aviso" class="alerta hidden"></div>
+  <div class="kpis" id="kpis"></div>
+  <div class="card" id="riesgo"></div>
+  <div class="card" style="margin-top:16px">
+    <h3 style="margin:0">Detalle por cuenta</h3>
+    <div id="detalle"></div>
+  </div>
+</main>
+
+<script>
+const ENDPOINT = "http://localhost:5016/graphql"; // se ajusta automáticamente al crear el paquete
+
+const MUT_LOGIN = `mutation Login($input: LoginInput!) {
+  login(input: $input) { success message token tokenType }
+}`;
+
+const QRY_BALANCE = `query Indicadores($from: Date!, $to: Date!) {
+  miGeneralBalance(fromDate: $from, toDate: $to) {
+    fromDate toDate currency openingBalance totalIncome totalExpense
+    profit closingBalance isInRed accountsInRed
+    accounts { accountId accountName isActive openingBalance totalIncome totalExpense profit closingBalance isInRed }
+  }
+}`;
+
+const $ = id => document.getElementById(id);
+
+// Solo formatea; los totales vienen del servidor como texto "1600.00"
+const fmt = s => new Intl.NumberFormat("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(s));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const esNeg = s => Number(s) < 0 ? "neg" : "";
+const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
+function mostrarError(el, msg) { el.textContent = msg; el.classList.remove("hidden"); }
+
+async function gql(query, variables, token) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let r;
+  try {
+    r = await fetch(ENDPOINT, { method: "POST", headers, body: JSON.stringify({ query, variables }) });
+  } catch {
+    throw { tipo: "error", msg: "No se pudo conectar con la API. Revisa que el backend esté corriendo y el puerto sea correcto." };
+  }
+  if (r.status === 401) throw { tipo: "sesion", msg: "Tu sesión expiró. Vuelve a iniciar sesión." };
+
+  const j = await r.json();
+  if (j.errors) {
+    const m = j.errors[0].message;
+    throw { tipo: /permiso/i.test(m) ? "permiso" : "error", msg: m };
+  }
+  return j.data;
+}
+
+$("formLogin").onsubmit = async e => {
+  e.preventDefault();
+  $("errLogin").classList.add("hidden");
+  try {
+    const d = await gql(MUT_LOGIN, { input: { email: $("email").value, password: $("password").value } });
+    sessionStorage.setItem("token", d.login.token);
+    mostrarDashboard();
+  } catch (err) {
+    mostrarError($("errLogin"), err.msg);
+  }
+};
+
+function mostrarDashboard() {
+  $("vistaLogin").classList.add("hidden");
+  $("vistaDash").classList.remove("hidden");
+  $("btnSalir").classList.remove("hidden");
+  if (!$("desde").value) {
+    const hoy = new Date();
+    $("desde").value = iso(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+    $("hasta").value = iso(hoy);
+  }
+  cargar();
+}
+
+async function cargar() {
+  const from = $("desde").value, to = $("hasta").value;
+  $("aviso").classList.add("hidden");
+  $("kpis").innerHTML = "";
+  $("riesgo").innerHTML = "";
+  $("detalle").innerHTML = "";
+  $("periodo").textContent = "";
+
+  if (!from || !to) return mostrarError($("aviso"), "Captura ambas fechas.");
+  if (from > to) return mostrarError($("aviso"), "La fecha inicial no puede ser posterior a la final.");
+
+  try {
+    const d = await gql(QRY_BALANCE, { from, to }, sessionStorage.getItem("token"));
+    pintar(d.miGeneralBalance);
+  } catch (err) {
+    if (err.tipo === "sesion") return cerrarSesion(err.msg);
+    mostrarError($("aviso"), err.tipo === "permiso"
+      ? "No tienes permiso para ver los balances de esta empresa."
+      : err.msg);
+  }
+}
+
+function pintar(b) {
+  $("periodo").textContent = `Período: ${b.fromDate} al ${b.toDate} · ${b.currency}`;
+
+  const tarjetas = [
+    ["Saldo inicial", b.openingBalance],
+    ["Ingresos", b.totalIncome],
+    ["Egresos", b.totalExpense],
+    ["Profit", b.profit],
+    ["Saldo final", b.closingBalance]
+  ];
+  $("kpis").innerHTML = tarjetas.map(([t, v], i) =>
+    `<div class="card kpi"><div class="label">${t}</div>
+     <div class="valor ${i === 4 ? esNeg(v) : ""}">${fmt(v)} MXN</div></div>`).join("");
+
+  $("riesgo").innerHTML =
+    `General en rojo: <span class="badge ${b.isInRed ? "rojo" : ""}">${b.isInRed ? "Sí" : "No"}</span>
+     &nbsp; Cuentas en rojo: <span class="badge ${b.accountsInRed ? "rojo" : ""}">${b.accountsInRed}</span>`;
+
+  if (!b.accounts.length) {
+    $("detalle").innerHTML = "<p>Esta empresa no tiene cuentas todavía.</p>";
+    return;
+  }
+
+  $("detalle").innerHTML = `<table>
+    <thead><tr><th>Cuenta</th><th>Saldo inicial</th><th>Ingresos</th><th>Egresos</th><th>Profit</th><th>Saldo final</th></tr></thead>
+    <tbody>${b.accounts.map(a => `<tr>
+      <td>${esc(a.accountName)}${a.isActive ? "" : " (inactiva)"}</td>
+      <td>${fmt(a.openingBalance)}</td>
+      <td>${fmt(a.totalIncome)}</td>
+      <td>${fmt(a.totalExpense)}</td>
+      <td class="${esNeg(a.profit)}">${fmt(a.profit)}</td>
+      <td class="${esNeg(a.closingBalance)}">${fmt(a.closingBalance)}
+        ${a.isInRed ? '<span class="badge rojo">En rojo</span>' : ""}</td>
+    </tr>`).join("")}</tbody>
+  </table>`;
+}
+
+function cerrarSesion(msg) {
+  sessionStorage.removeItem("token");
+  $("vistaDash").classList.add("hidden");
+  $("btnSalir").classList.add("hidden");
+  $("vistaLogin").classList.remove("hidden");
+  if (msg) mostrarError($("errLogin"), msg);
+}
+
+$("btnSalir").onclick = () => cerrarSesion();
+$("btnActualizar").onclick = cargar;
+
+if (sessionStorage.getItem("token")) mostrarDashboard();
+</script>
+</body>
+</html>
