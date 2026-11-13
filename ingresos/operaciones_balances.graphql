@@ -1,0 +1,43 @@
+# Unidad II · Actividad 7 — balances (convención de SistemaEmpresarial: actorCompanyUserId)
+
+query BalanceDeUnaCuenta($accountId: ID!, $from: Date!, $to: Date!, $actor: String!) {
+  accountBalance(
+    accountId: $accountId
+    fromDate: $from
+    toDate: $to
+    actorCompanyUserId: $actor
+  ) {
+    accountId
+    accountName
+    isActive
+    openingBalance
+    totalIncome
+    totalExpense
+    profit
+    closingBalance
+    isInRed
+  }
+}
+
+query BalanceDeLaEmpresa($from: Date!, $to: Date!, $actor: String!) {
+  generalBalance(fromDate: $from, toDate: $to, actorCompanyUserId: $actor) {
+    companyId
+    currency
+    fromDate
+    toDate
+    openingBalance
+    totalIncome
+    totalExpense
+    profit
+    closingBalance
+    isInRed
+    accountsInRed
+    accounts {
+      accountId
+      accountName
+      isActive
+      closingBalance
+      isInRed
+    }
+  }
+}
