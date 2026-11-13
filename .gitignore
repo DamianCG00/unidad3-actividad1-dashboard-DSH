@@ -1,0 +1,20 @@
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Bases de datos locales y secretos
+*.db
+*.sqlite3
+.env
+.env.*
+
+# Archivos empaquetados y editores
+*.zip
+.idea/
+.vscode/
